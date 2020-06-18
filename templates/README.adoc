@@ -1,0 +1,158 @@
+# Build and Deploy application on OpenShift with JBoss EAP
+
+# Install the templates
+
+[source, bash]
+----
+$ oc apply -f https://raw.githubusercontent.com/jmesnil/jboss-eap-openshift-templates/s2i-build-only/templates/eap-s2i-build.json
+template.template.openshift.io/eap-s2i-build created
+$ oc apply -f https://raw.githubusercontent.com/jmesnil/jboss-eap-openshift-templates/s2i-build-only/templates/eap-basic.json
+template.template.openshift.io/eap-basic created
+----
+
+# Build the application image
+
+The ImageStreams from JBoss EAP must be already be installed with:
+
+[source, bash]
+----
+$ oc replace --force -f https://github.com/jboss-container-images/jboss-eap-openshift-templates/raw/eap-xp1/jboss-eap-xp1-openjdk11-openshift.json
+imagestream.image.openshift.io "jboss-eap-xp1-openjdk11-openshift" deleted
+imagestream.image.openshift.io "jboss-eap-xp1-openjdk11-runtime-openshift" deleted
+imagestream.image.openshift.io/jboss-eap-xp1-openjdk11-openshift replaced
+imagestream.image.openshift.io/jboss-eap-xp1-openjdk11-runtime-openshift replaced
+----
+
+The template `eap-s2i-build` can be used to build an Application Image based on JBoss EAP.
+
+## List the parameters to build an Application Image
+
+[source, bash]
+----
+$ oc process --parameters eap-s2i-build
+NAME                         DESCRIPTION                                                                                                                                                                                                                                                         GENERATOR           VALUE
+IMAGE_NAME                   The name for the application ImageStream.                                                                                                                                                                                                                                               
+EAP_IMAGE_NAME               EAP XP imagestream tag to be used, example: jboss-eap-xp1-openjdk11-openshift:1.0                                                                                                                                                                                                       jboss-eap-xp1-openjdk11-openshift:1.0
+EAP_RUNTIME_IMAGE_NAME       EAP XP Runtime imagestream tag to be used, example: jboss-eap-xp1-openjdk11-runtime-openshift:1.0                                                                                                                                                                                       jboss-eap-xp1-openjdk11-runtime-openshift:1.0
+SOURCE_REPOSITORY_URL        Git source URI for application                                                                                                                                                                                                                                                          https://github.com/jboss-developer/jboss-eap-quickstarts.git
+SOURCE_REPOSITORY_REF        Git branch/tag reference                                                                                                                                                                                                                                                                7.3.x-openshift
+CONTEXT_DIR                  Path within Git project to build; empty for root project directory.                                                                                                                                                                                                                     helloworld-rs
+GALLEON_PROVISION_LAYERS     Comma separated list of Galleon layers to provision a server.                                                                                                                                                                                                                           
+GITHUB_WEBHOOK_SECRET        GitHub trigger secret                                                                                                                                                                                                                                               expression          [a-zA-Z0-9]{8}
+GENERIC_WEBHOOK_SECRET       Generic build trigger secret                                                                                                                                                                                                                                        expression          [a-zA-Z0-9]{8}
+EAP_IMAGE_STREAM_NAMESPACE   Namespace in which the ImageStreams for Red Hat Middleware images are installed. These ImageStreams are normally installed in the openshift namespace. You should only need to modify this if you've installed the ImageStreams in a different namespace/project.                       openshift
+MAVEN_MIRROR_URL             Maven mirror to use for S2I builds                                                                                                                                                                                                                                                      
+MAVEN_ARGS_APPEND            Maven additional arguments to use for S2I builds                                                                                                                                                                                                                                        -Dcom.redhat.xpaas.repo.jbossorg
+ARTIFACT_DIR                 List of directories from which archives will be copied into the deployment folder. If unspecified, all archives in /target will be copied.
+----
+
+To build an application image, process this template with the required `APPLICATION_NAME` and the parameters to identify the EAP images and the Git repository:
+
+[source,bash]
+----
+$ oc process eap-s2i-build \
+  -p IMAGE_NAME=my-app \
+  \
+  -p EAP_IMAGE_NAME=jboss-eap-xp1-openjdk11-openshift:1.0 \
+  -p EAP_RUNTIME_IMAGE_NAME=jboss-eap-xp1-openjdk11-runtime-openshift:1.0 \
+  -p EAP_IMAGE_STREAM_NAMESPACE=$(oc project -q) \
+  \
+  -p SOURCE_REPOSITORY_URL=https://github.com/jboss-developer/jboss-eap-quickstarts.git \
+  -p SOURCE_REPOSITORY_REF=7.3.x-openshift \
+  -p CONTEXT_DIR=helloworld-rs | oc create -f -
+
+imagestream.image.openshift.io/my-app created
+imagestream.image.openshift.io/my-app-build-artifacts created
+buildconfig.build.openshift.io/my-app-build-artifacts created
+buildconfig.build.openshift.io/my-app created
+----
+
+Two images will be built and stored in the imagestreams:
+
+[source,bash]
+----
+$ oc get imagestreams
+NAME                                        IMAGE REPOSITORY                                                                                             TAGS         UPDATED
+...
+my-app                                      default-route-openshift-image-registry.apps-crc.testing/eap-demo/my-app                                      latest       12 minutes ago
+my-app-build-artifacts                      default-route-openshift-image-registry.apps-crc.testing/eap-demo/my-app-build-artifacts                      latest       13 minutes ago
+----
+
+The image to use to deploy the application is the runtime image named with `$IMAGE_NAME` (`my-app` in the example above).
+
+You can follow the builds of the images with:
+
+[source,bash]
+----
+$  oc logs -f bc/my-app-build-artifacts
+...
+Push successful
+$  oc logs -f bc/my-app
+...
+Push successful
+----
+
+# Deploy the application
+
+Once the application image is built, it can be deployed with the `eap-basic` template that takes the application imagestream tag in the `APPLICATION_IMAGE` parameter.
+
+[source,bash]
+----
+$ oc process --parameters eap-basic
+NAME                                 DESCRIPTION                                                                                                                                                                                                                                                                                              GENERATOR           VALUE
+APPLICATION_IMAGE                    The ImageStream Tag for the application image.                                                                                                                                                                                                                                                                               
+APPLICATION_NAME                     The name for the application.                                                                                                                                                                                                                                                                                                eap-basic-app
+ENABLE_GENERATE_DEFAULT_DATASOURCE   Enable ExampleDS datasource.                                                                                                                                                                                                                                                                                                 false
+MQ_QUEUES                            Queue names, separated by commas. These queues will be automatically created when the broker starts. Also, they will be made accessible as JNDI resources in EAP. Note that all queues used by the application *must* be specified here in order to be created automatically on the remote AMQ broker.                       
+MQ_TOPICS                            Topic names, separated by commas. These topics will be automatically created when the broker starts. Also, they will be made accessible as JNDI resources in EAP. Note that all topics used by the application *must* be specified here in order to be created automatically on the remote AMQ broker.                       
+MQ_CLUSTER_PASSWORD                  AMQ cluster admin password                                                                                                                                                                                                                                                                               expression          [a-zA-Z0-9]{8}
+JGROUPS_CLUSTER_PASSWORD             JGroups cluster password                                                                                                                                                                                                                                                                                 expression          [a-zA-Z0-9]{8}
+AUTO_DEPLOY_EXPLODED                 Controls whether exploded deployment content should be automatically deployed                                                                                                                                                                                                                                                false
+MEMORY_LIMIT                         Container memory limit                                                                                                                                                                                                                                                                                                       1Gi
+
+----
+
+To deploy an application, process the `eap-basic` template with the required `APPLICATION_NAME` and `APPLICATION_IMAGE`:
+
+[source,bash]
+----
+$ oc process eap-basic \
+   -p APPLICATION_NAME=my-demo-app \
+   -p APPLICATION_IMAGE=my-app | oc create -f -
+
+service/my-demo-app created
+service/my-demo-app-ping created
+route.route.openshift.io/my-demo-app created
+deploymentconfig.apps.openshift.io/my-demo-app created
+----
+
+We can see the status of the whole application with:
+
+[source,bash]
+----
+$ oc status
+
+In project eap-demo on server https://api.crc.testing:6443
+
+svc/my-demo-app-ping (headless):8888
+https://my-demo-app-eap-demo.apps-crc.testing (redirects) (svc/my-demo-app)
+  dc/my-demo-app deploys istag/my-app:latest <-
+    bc/my-app docker builds Dockerfile on istag/jboss-eap-xp1-openjdk11-runtime-openshift:1.0 
+    deployment #1 deployed 4 minutes ago - 1 pod
+
+bc/my-app-build-artifacts source builds https://github.com/jboss-developer/jboss-eap-quickstarts.git#7.3.x-openshift on istag/jboss-eap-xp1-openjdk11-openshift:1.0
+  -> istag/my-app-build-artifacts:latest
+  build #1 succeeded 10 minutes ago - cfc5a0e: EAP 7.3 Openshift: branch cleanup (Eduardo Martins <emartins@redhat.com>)
+
+
+1 info identified, use 'oc status --suggest' to see details.
+----
+
+The application is then up and running:
+
+[source,bash]
+----
+$ curl -kL  $(oc get route/my-demo-app -o jsonpath='{.spec.host}')/rest/json
+
+{"result":"Hello World!"}
+----
